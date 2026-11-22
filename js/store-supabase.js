@@ -62,8 +62,18 @@ export async function createStore(config) {
         sources: check(sources),
       };
     },
+    // Several thousand rows, 1000 per request: the first page also brings the total, and the
+    // remaining pages are then asked for all at once instead of one after another.
     async questionIndex() {
-      return all(() => sb.from("practice_questions").select("id, level, section, marks, source_id, primary_topic_id, secondary_topic_ids").order("id"));
+      const page = (from, opts) => sb.from("practice_questions")
+        .select("id, level, section, marks, source_id, primary_topic_id, secondary_topic_ids", opts).order("id").range(from, from + PAGE - 1);
+      const first = await page(0, { count: "exact" });
+      const rows = check(first);
+      const total = first.count == null ? rows.length : first.count;
+      const starts = [];
+      for (let from = PAGE; from < total; from += PAGE) starts.push(from);
+      const rest = await Promise.all(starts.map((from) => page(from)));
+      return rows.concat(...rest.map(check));
     },
     async questions(ids) {
       if (!ids.length) return [];

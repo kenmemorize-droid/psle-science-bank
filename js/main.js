@@ -13,7 +13,7 @@ let filters = null;      // practice set-up choices, kept while the page is open
 let lastTried = new Map();
 let session = null;      // {mode, qs, pos, done: [{q, outcome, queue}], queue: Map, finished}
 let st = null;           // state of the question on screen
-let busy = false;
+let saving = 0;          // answers still on their way to the database
 
 const topicName = (id) => { const t = topics.get(id); return t ? t.topic + (t.sub_topic ? " — " + t.sub_topic : "") : "Unclassified"; };
 const sourceName = (id) => { const s = sources.get(id); return s ? `${s.level} · ${s.school} · ${s.paper_type} ${s.year || "past year"}` : ""; };
@@ -27,7 +27,6 @@ function paint(html, keepScroll) {
 }
 function showError(e) {
   console.error(e);
-  busy = false;
   view.querySelectorAll(".alert").forEach((n) => n.remove());
   view.insertAdjacentHTML("afterbegin", `<div class="alert" role="alert">${esc(e && e.message ? e.message : String(e))}</div>`);
   window.scrollTo(0, 0);
@@ -158,6 +157,7 @@ async function startSession(mode, ids) {
   const [qs, queue] = await Promise.all([store.questions(ids), store.queue()]);
   if (!qs.length) return go("#home");
   session = { mode, qs, pos: 0, done: [], queue: new Map(queue.map((r) => [r.question_id, r])), finished: false };
+  preload(qs[0]);
   newState();
   go("#session");
 }
@@ -169,6 +169,16 @@ async function startReview() {
   await startSession("review", due.map((r) => r.question_id));
 }
 const current = () => session.qs[session.pos];
+const fetched = new Set();
+// Fetch the pictures of a question before it is shown, so that "Next question" does not wait for them.
+function preload(q) {
+  if (!q) return;
+  q.images.forEach((im) => {
+    if (!im.url || fetched.has(im.url)) return;
+    fetched.add(im.url);
+    new Image().src = im.url;
+  });
+}
 function newState() {
   const n = L.markUnits(current()).length;
   st = { selected: null, revealed: false, choices: Array(n).fill(null), typed: Array(n).fill(""), kwMode: Array(n).fill(false), saved: null };
@@ -188,6 +198,7 @@ function feedbackHtml(q) {
 
 function showQuestion(keepScroll) {
   const q = current(), n = session.qs.length;
+  preload(session.qs[session.pos + 1]);
   let actions;
   if (st.saved) actions = `${feedbackHtml(q)}<button type="button" class="btn primary" data-act="next">${session.pos + 1 < n ? "Next question" : "See my results"}</button>`;
   else if (q.section === "mcq") actions = `<button type="button" class="btn primary" data-act="check" ${st.selected == null ? "disabled" : ""}>Check my answer</button>`;
@@ -203,22 +214,33 @@ function showQuestion(keepScroll) {
   if (st.saved && keepScroll) view.querySelector(".feedback").scrollIntoView({ block: "nearest" });
 }
 
-async function finish(outcome) {
-  if (busy) return;
-  busy = true;
-  const q = current();
-  await store.addAttempt({ question_id: q.id, mode: session.mode, ...outcome });
-  const row = L.afterAttempt(session.queue.get(q.id) || null, outcome.result, session.mode, intervals, Date.now());
-  if (row) {
-    const full = { question_id: q.id, ...row };
-    await store.saveQueue(full);
-    session.queue.set(q.id, full);
-  }
+// The result is shown at once; the answer is sent to the database behind it. If the sending
+// fails it is tried again, and the student is told only if it still fails.
+function finish(outcome) {
+  if (st.saved) return;
+  const q = current(), mode = session.mode;
+  const row = L.afterAttempt(session.queue.get(q.id) || null, outcome.result, mode, intervals, Date.now());
+  const full = row ? { question_id: q.id, ...row } : null;
+  if (full) session.queue.set(q.id, full);
   st.saved = { outcome, queue: row };
   session.done.push({ q, outcome, queue: row });
-  busy = false;
   showQuestion(true);
+  send(() => store.addAttempt({ question_id: q.id, mode, ...outcome }));
+  if (full) send(() => store.saveQueue(full));
 }
+async function send(write) {
+  saving += 1;
+  try {
+    for (let tries = 1; ; tries += 1) {
+      try { await write(); return; }
+      catch (e) {
+        if (tries === 3) { showError(new Error("One of your answers could not be saved. Check the internet connection, then carry on.")); return; }
+        await new Promise((r) => setTimeout(r, 1500 * tries));
+      }
+    }
+  } finally { saving -= 1; }
+}
+window.addEventListener("beforeunload", (e) => { if (saving) { e.preventDefault(); e.returnValue = ""; } });
 
 function showSummary() {
   const done = session.done;
@@ -254,6 +276,12 @@ window.addEventListener("hashchange", route);
 view.addEventListener("submit", guard(async (e) => {
   e.preventDefault();
   const form = e.target.dataset.form, data = Object.fromEntries(new FormData(e.target));
+  const btn = e.target.querySelector('button[type="submit"]'), label = btn && btn.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = "Loading…"; }
+  try { await submit(form, data); }
+  finally { if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; } }
+}));
+async function submit(form, data) {
   if (form === "signin") {
     user = await store.signIn(data);
     await loadBase();
@@ -262,7 +290,7 @@ view.addEventListener("submit", guard(async (e) => {
     const rows = index.filter((r) => L.matches(r, filters));
     await startSession("practice", L.pickQuestions(rows, lastTried, filters.count).map((r) => r.id));
   }
-}));
+}
 
 view.addEventListener("change", guard(async (e) => {
   const t = e.target;
