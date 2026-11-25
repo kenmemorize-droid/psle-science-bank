@@ -64,6 +64,63 @@ export function afterAttempt(entry, result, mode, intervals, now) {
 
 export const isDue = (row, now) => row.status === "due" && new Date(row.due_at).getTime() <= now;
 
+// ---- theme stats (the pentagon) -----------------------------------------------------------
+// One number from 0 to 1 for each theme: accuracy x coverage, over the student's most recent
+// STAT_WINDOW questions in that theme.
+//   accuracy = marks earned / marks possible, taking only the latest answer to each question
+//   coverage = questions in the window / STAT_WINDOW (so a side is full only after
+//              STAT_WINDOW questions, all of them right)
+// attempts: [{question_id, marks_awarded, answered_at}]. info: Map of question id -> {theme, marks}.
+export const STAT_WINDOW = 40;
+export function themeStats(attempts, info, themes, size = STAT_WINDOW) {
+  const latest = new Map();
+  for (const a of attempts) {
+    const at = Date.parse(a.answered_at), old = latest.get(a.question_id);
+    if (!old || at >= old.at) latest.set(a.question_id, { at, got: Number(a.marks_awarded) || 0 });
+  }
+  const by = new Map(themes.map((t) => [t, []]));
+  latest.forEach((a, id) => {
+    const q = info.get(id);
+    if (q && q.marks > 0 && by.has(q.theme)) by.get(q.theme).push({ ...a, out: Number(q.marks) });
+  });
+  return themes.map((theme) => {
+    const rows = by.get(theme).sort((a, b) => b.at - a.at).slice(0, size);
+    const got = rows.reduce((s, r) => s + r.got, 0), out = rows.reduce((s, r) => s + r.out, 0);
+    const accuracy = out ? Math.min(1, got / out) : 0, coverage = rows.length / size;
+    return { theme, tried: rows.length, accuracy, coverage, value: accuracy * coverage };
+  });
+}
+
+// ---- daily streak -------------------------------------------------------------------------
+// A day counts once the student has given DAILY_GOAL answers on it (practice or review).
+// Every FREEZE_EVERY days of streak earns one freeze, and at most FREEZE_MAX are kept. A missed
+// day uses up a freeze by itself and the streak stays as it was; with no freeze left it goes
+// back to 0. Today never breaks a streak: it is still open until midnight.
+// Nothing is stored: the whole history is worked out again from the dates of the answers.
+export const DAILY_GOAL = 10, FREEZE_EVERY = 10, FREEZE_MAX = 2;
+const dayNo = (t) => { const d = new Date(t); return Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000); };
+export function streak(attempts, now, goal = DAILY_GOAL) {
+  const counts = new Map();
+  for (const a of attempts) { const d = dayNo(Date.parse(a.answered_at)); counts.set(d, (counts.get(d) || 0) + 1); }
+  const today = dayNo(now), done = (d) => (counts.get(d) || 0) >= goal;
+  const first = Math.min(...[...counts.keys()].filter(done));          // Infinity when no day has counted yet
+  const state = new Map();
+  let days = 0, freezes = 0;
+  for (let d = first; d <= today; d += 1) {
+    if (done(d)) {
+      days += 1;
+      if (days % FREEZE_EVERY === 0) freezes = Math.min(FREEZE_MAX, freezes + 1);
+      state.set(d, "done");
+    } else if (d === today) state.set(d, "open");
+    else if (days > 0 && freezes > 0) { freezes -= 1; state.set(d, "frozen"); }
+    else { days = 0; state.set(d, "missed"); }
+  }
+  // the last 7 days, oldest first: "done", "frozen", "missed", "open" (today, not done yet) or "none"
+  const week = [];
+  for (let back = 6; back >= 0; back -= 1) week.push({ back, state: state.get(today - back) || (back === 0 ? "open" : "none") });
+  return { days, freezes, goal, today: counts.get(today) || 0, doneToday: done(today), week };
+}
+
 // ---- choosing practice questions ----------------------------------------------------------
 export function matches(row, f) {
   return (!f.level || row.level === f.level) && (!f.section || row.section === f.section) &&

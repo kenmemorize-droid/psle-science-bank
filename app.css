@@ -156,6 +156,60 @@ th { background: var(--bg); font-weight: 600; }
 .badge.partial { background: var(--warn-soft); color: var(--warn); }
 .badge.wrong { background: var(--bad-soft); color: var(--bad); }
 
+/* the pentagon of theme stats and the daily streak */
+.profile { display: grid; gap: 16px 28px; align-items: center; }
+@media (min-width: 640px) { .profile { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
+.radar-box, .streak { min-width: 0; }
+.radar { display: block; width: 100%; max-width: 360px; height: auto; margin: 0 auto; }
+.radar .ring { fill: none; stroke: var(--line); stroke-width: 1; }
+.radar .ring.outer { fill: var(--bg); stroke: var(--muted); stroke-width: 1.5; }
+.radar .spoke { stroke: var(--line); stroke-width: 1; }
+.radar .now { fill: var(--accent); fill-opacity: .28; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
+.radar .was { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 4; stroke-linejoin: round; }
+.radar .dot { fill: var(--accent); stroke: var(--card); stroke-width: 1.5; }
+.radar text { font-size: 13px; fill: var(--ink); }
+.radar .lab-name { font-weight: 700; }
+.radar .lab-val { fill: var(--muted); font-variant-numeric: tabular-nums; }
+.radar .up { fill: var(--ok); font-weight: 700; }
+.radar .down { fill: var(--bad); font-weight: 700; }
+.radar .lab rect { fill: transparent; }
+.radar.tap .lab { cursor: pointer; }
+.radar.tap .lab:hover rect { fill: var(--accent-soft); }
+
+.streak-n { display: flex; align-items: baseline; gap: 8px; margin: 0; color: var(--muted); }
+.streak-n b { font-size: 2.4rem; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+.streak-n .flame { font-size: 1.7rem; }
+.streak-n.none .flame { filter: grayscale(1); opacity: .55; }
+.today { display: flex; align-items: center; gap: 10px; font-size: .88rem; color: var(--muted); }
+.today progress { flex: 1; min-width: 0; }
+.today span { white-space: nowrap; }
+.week { list-style: none; display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; padding: 0; margin: 14px 0; }
+.week li { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: .74rem; color: var(--muted); }
+.week .wm { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; font-size: .9rem; font-weight: 700; }
+.week .done .wm { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.week .frozen .wm { background: var(--info-soft); border-color: var(--info); color: var(--info); }
+.week .open .wm { border-style: dashed; border-color: var(--accent); }
+.week .none .wm { border-color: transparent; background: var(--bg); }
+.week .today .wd { color: var(--ink); font-weight: 700; }
+.freezes { display: flex; align-items: center; gap: 6px; margin: 0; font-size: .92rem; }
+.ice { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--bg); color: var(--line); border: 1px solid var(--line); }
+.ice.on { background: var(--info-soft); color: var(--info); border-color: var(--info); }
+.freezes span:last-child { margin-left: 4px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.themes { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.theme-btn {
+  display: grid; grid-template-columns: 1fr auto; gap: 0 8px; align-items: baseline; text-align: left; font: inherit; color: var(--ink); cursor: pointer;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-height: 48px;
+}
+.theme-btn:hover { border-color: var(--accent); }
+.theme-btn .t-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.theme-btn b { color: var(--accent); font-variant-numeric: tabular-nums; }
+.theme-btn small { grid-column: 1 / -1; color: var(--muted); font-size: .78rem; }
+.move { display: inline-block; margin-right: 16px; font-size: 1.05rem; }
+.move.up { color: var(--ok); }
+.move.down { color: var(--bad); }
+
 @media (max-width: 480px) {
   body { font-size: 16px; }
   .q { padding: 12px; }

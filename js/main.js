@@ -1,14 +1,18 @@
 // Student app: sign in, practise by topic, mark, and review wrong answers on spaced gaps.
 // Plain modules, no build step. The rules live in logic.js; the back end is chosen in store.js.
 import * as L from "./logic.js";
-import { questionHtml, esc, fmt } from "./render.js";
+import { questionHtml, radarHtml, pct, esc, fmt } from "./render.js";
 import { makeStore } from "./store.js";
 
 const view = document.getElementById("view");
 const who = document.getElementById("who");
 const REVIEW_BATCH = 20;
+const THEME_BATCH = 10;  // questions in a run started by tapping a theme
+const THEME_ORDER = ["Diversity", "Cycles", "Systems", "Interactions", "Energy"];   // corners of the pentagon, from the top, clockwise
 
 let store, user, index, intervals, topics, sources;
+let themes = [];         // the themes that have a corner on the pentagon
+let qInfo = new Map();   // question id -> {theme, marks}, for the theme stats
 let filters = null;      // practice set-up choices, kept while the page is open
 let lastTried = new Map();
 let session = null;      // {mode, qs, pos, done: [{q, outcome, queue}], queue: Map, finished}
@@ -70,7 +74,38 @@ async function loadBase() {
   sources = new Map(cat.sources.map((s) => [s.id, s]));
   index = idx;
   intervals = iv;
+  const seen = new Set(cat.topics.map((t) => t.theme).filter(Boolean));
+  themes = THEME_ORDER.filter((t) => seen.has(t)).concat([...seen].filter((t) => !THEME_ORDER.includes(t)));
+  qInfo = new Map(idx.map((r) => [r.id, { theme: themeOf(r), marks: r.marks }]));
   renderWho();
+}
+function themeOf(row) { const t = topics.get(row.primary_topic_id); return t ? t.theme : null; }
+
+// ---- streak ----------------------------------------------------------------------------------
+const ICE = "❄︎";   // a snowflake, drawn as text so that it takes the colour of the page
+function streakHtml(sk) {
+  const left = sk.goal - sk.today;
+  const saved = sk.week[5].state === "frozen";
+  let line;
+  if (sk.doneToday) line = "Done for today. Come back tomorrow to keep it going.";
+  else if (sk.days) line = `${saved ? "A freeze saved your streak yesterday. " : ""}Answer ${plural(left, "more question")} today to keep it going.`;
+  else line = `Answer ${plural(left, sk.today ? "more question" : "question")} today to start a streak.`;
+  const mark = { done: "✓", frozen: ICE, missed: "×", open: "", none: "" };
+  const word = { done: "done", frozen: "saved by a freeze", missed: "missed", open: "not done yet", none: "before your streak" };
+  const d = new Date();
+  const week = sk.week.map((w) => {
+    const name = new Date(d.getFullYear(), d.getMonth(), d.getDate() - w.back).toLocaleDateString("en-SG", { weekday: "short" });
+    return `<li class="${w.state}${w.back ? "" : " today"}" title="${name}: ${word[w.state]}"><span class="wd">${name.slice(0, 2)}</span><span class="wm" aria-hidden="true">${mark[w.state]}</span><span class="vh">${word[w.state]}</span></li>`;
+  }).join("");
+  const ice = Array.from({ length: L.FREEZE_MAX }, (_, i) => `<span class="ice${i < sk.freezes ? " on" : ""}" aria-hidden="true">${ICE}</span>`).join("");
+  return `<div class="streak">
+      <p class="streak-n${sk.days ? "" : " none"}"><span class="flame" aria-hidden="true">🔥</span><b>${sk.days}</b><span>day streak</span></p>
+      <p class="sub">${line}</p>
+      <div class="today"><progress max="${sk.goal}" value="${Math.min(sk.today, sk.goal)}"></progress><span>${Math.min(sk.today, sk.goal)} of ${sk.goal} today</span></div>
+      <ol class="week" aria-label="The last 7 days">${week}</ol>
+      <p class="freezes">${ice}<span>${sk.freezes} of ${L.FREEZE_MAX} freezes</span></p>
+      <p class="sub">A freeze saves your streak when you miss a day. It is used by itself. You earn one for every ${L.FREEZE_EVERY} days of streak.</p>
+    </div>`;
 }
 
 // ---- home ------------------------------------------------------------------------------------
@@ -84,7 +119,20 @@ async function showHome() {
   const next = later.map((r) => r.due_at).sort()[0];
   const tried = new Set(attempts.map((a) => a.question_id)).size;
   const right = attempts.filter((a) => a.result === "correct").length;
+  const stats = L.themeStats(attempts, qInfo, themes);
   paint(`<h1>Hello, ${esc(user.name)}</h1>
+    <section class="card">
+      <div class="profile">
+        <div class="radar-box">
+          <h2>Your science pentagon</h2>
+          ${radarHtml(stats, { tap: true })}
+        </div>
+        ${streakHtml(L.streak(attempts, now))}
+      </div>
+      <p class="sub" data-theme-note role="status">A side grows when you answer more questions in that theme and get them right. It looks at your last ${L.STAT_WINDOW} questions in the theme. Tap a theme to practise it.</p>
+      <div class="themes">${stats.map((s) => `<button type="button" class="theme-btn" data-act="theme" data-theme="${esc(s.theme)}">
+        <span class="t-name">${esc(s.theme)}</span><b>${pct(s.value)}%</b><small>${s.tried} of ${L.STAT_WINDOW} questions</small></button>`).join("")}</div>
+    </section>
     <section class="card">
       <h2>Review</h2>
       <p class="big">${due.length ? `${plural(due.length, "question")} to review today` : "Nothing to review today"}</p>
@@ -109,11 +157,28 @@ async function showHome() {
 }
 
 // ---- practice set-up -------------------------------------------------------------------------
-async function showSetup() {
-  session = null;
+async function loadLastTried() {
   const attempts = await store.attempts();
   lastTried = new Map();
   attempts.forEach((a) => lastTried.set(a.question_id, Math.max(lastTried.get(a.question_id) || 0, Date.parse(a.answered_at))));
+}
+// Tapping a theme on the pentagon: a short run in that theme, at the student's level when the
+// bank has questions there, the ones never tried first.
+let starting = false;
+async function startTheme(theme) {
+  if (starting) return;
+  starting = true;
+  try {
+    const note = view.querySelector("[data-theme-note]");
+    if (note) note.textContent = `Loading ${theme} questions…`;
+    await loadLastTried();
+    const all = index.filter((r) => themeOf(r) === theme), mine = all.filter((r) => r.level === user.level);
+    await startSession("practice", L.pickQuestions(mine.length ? mine : all, lastTried, THEME_BATCH).map((r) => r.id));
+  } finally { starting = false; }
+}
+async function showSetup() {
+  session = null;
+  await loadLastTried();
   const levels = [...new Set(index.map((r) => r.level))].sort();
   if (!filters) filters = { level: levels.includes(user.level) ? user.level : "", topic: 0, section: "", source: "", count: 10 };
   paintSetup();
@@ -154,9 +219,10 @@ function paintSetup() {
 
 // ---- a run of questions (practice or review) ------------------------------------------------------
 async function startSession(mode, ids) {
-  const [qs, queue] = await Promise.all([store.questions(ids), store.queue()]);
+  const [qs, queue, before] = await Promise.all([store.questions(ids), store.queue(), store.attempts()]);
   if (!qs.length) return go("#home");
-  session = { mode, qs, pos: 0, done: [], queue: new Map(queue.map((r) => [r.question_id, r])), finished: false };
+  // before: the answers given up to now, to show at the end how the pentagon and the streak moved
+  session = { mode, qs, pos: 0, done: [], queue: new Map(queue.map((r) => [r.question_id, r])), finished: false, before };
   preload(qs[0]);
   newState();
   go("#session");
@@ -223,7 +289,7 @@ function finish(outcome) {
   const full = row ? { question_id: q.id, ...row } : null;
   if (full) session.queue.set(q.id, full);
   st.saved = { outcome, queue: row };
-  session.done.push({ q, outcome, queue: row });
+  session.done.push({ q, outcome, queue: row, at: new Date().toISOString() });
   showQuestion(true);
   send(() => store.addAttempt({ question_id: q.id, mode, ...outcome }));
   if (full) send(() => store.saveQueue(full));
@@ -248,11 +314,31 @@ function showSummary() {
   const queued = done.filter((d) => d.queue && d.queue.status === "due" && d.outcome.result !== "correct").length;
   const mastered = done.filter((d) => d.queue && d.queue.status === "mastered").length;
   const label = { correct: "Correct", partial: "Partly", wrong: "Wrong" };
+  // the pentagon and the streak, before and after this run
+  const after = session.before.concat(done.map((d) => ({ question_id: d.q.id, marks_awarded: d.outcome.marks_awarded, answered_at: d.at })));
+  const was = L.themeStats(session.before, qInfo, themes), is = L.themeStats(after, qInfo, themes);
+  const moved = is.map((s, i) => ({ theme: s.theme, from: pct(was[i].value), to: pct(s.value) })).filter((m) => m.from !== m.to);
+  const now = Date.now(), s0 = L.streak(session.before, now), s1 = L.streak(after, now);
+  let streakLine;
+  if (s1.doneToday && !s0.doneToday) streakLine = `<span aria-hidden="true">🔥</span> Today is done. Your streak is now ${plural(s1.days, "day")}.${s1.freezes > s0.freezes ? " You earned a freeze." : ""}`;
+  else if (s1.doneToday) streakLine = `<span aria-hidden="true">🔥</span> Your streak is ${plural(s1.days, "day")}.`;
+  else streakLine = `${s1.today} of ${s1.goal} answers today. ${plural(s1.goal - s1.today, "more answer")} ${s1.days ? "will keep your streak going" : "will start a streak"}.`;
+  const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const growth = `<section class="card">
+      <h2>Your science pentagon</h2>
+      <div class="radar-box">${radarHtml(is, { before: was, calm })}</div>
+      <p class="big">${moved.length ? moved.map((m) => `<span class="move ${m.to > m.from ? "up" : "down"}">${esc(m.theme)} ${m.from}% → ${m.to}%</span>`).join("") : "No side moved this time."}</p>
+      <p class="sub">${moved.length ? "The dashed line shows where you were before this run. " : ""}${streakLine}</p>
+    </section>`;
   paint(`<h1>${session.mode === "review" ? "Review done" : "Practice done"}</h1>
     <section class="card">
       <p class="big">${fmt(got)} out of ${fmt(out)} marks</p>
       <p class="sub">${plural(done.filter((d) => d.outcome.result === "correct").length, "question")} fully correct out of ${done.length}.
         ${queued ? `${plural(queued, "question")} ${queued === 1 ? "is" : "are"} on your review list.` : ""} ${mastered ? `${plural(mastered, "question")} mastered.` : ""}</p>
+    </section>
+    ${themes.length ? growth : ""}
+    <section class="card">
+      <h2>Your answers</h2>
       <ul class="results">${done.map((d) => `<li><span class="badge ${d.outcome.result}">${label[d.outcome.result]}</span>
         <span>${esc(sourceName(d.q.source_id))} · Q${d.q.q_number}</span><span class="marks">${fmt(d.outcome.marks_awarded)} / ${fmt(d.q.marks)}</span></li>`).join("")}</ul>
       <div class="row"><a class="btn primary" href="#home">Back to home</a>${session.mode === "practice" ? '<a class="btn" href="#practice">Practise more</a>' : ""}</div>
@@ -329,6 +415,7 @@ view.addEventListener("click", guard(async (e) => {
   const act = t.closest("[data-act]");
   if (!act) return;
   const a = act.dataset.act;
+  if (a === "theme") return startTheme(act.dataset.theme);
   if (a === "check" && st.selected != null) return finish(L.markMcq(current(), st.selected));
   if (a === "reveal") { st.revealed = true; return showQuestion(true); }
   if (a === "save" && st.choices.every(Boolean)) return finish(L.markOpen(current(), st.choices));

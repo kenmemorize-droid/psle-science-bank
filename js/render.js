@@ -106,3 +106,35 @@ export function questionHtml(q, st, ctx) {
     ${q.section === "mcq" ? mcqHtml(q, st) : openHtml(q, st)}
   </article>`;
 }
+
+// ---- the pentagon of theme stats -------------------------------------------------------------
+// stats: [{theme, value 0..1}] from logic.themeStats, one corner each, the first at the top.
+// opts.before: the stats before a session, drawn as a dashed outline that the shape grows from.
+// opts.tap: the labels can be tapped to practise that theme.  opts.calm: no movement.
+export const pct = (v) => Math.round(v * 100);
+export function radarHtml(stats, opts = {}) {
+  const n = stats.length, cx = 160, cy = 148, R = 96;
+  const dir = (i) => { const a = (-90 + (i * 360) / n) * Math.PI / 180; return [Math.cos(a), Math.sin(a)]; };
+  const at = (i, r) => { const [c, s] = dir(i); return [+(cx + r * c).toFixed(1), +(cy + r * s).toFixed(1)]; };
+  const reach = (v) => R * (0.06 + 0.94 * v);          // an empty side still shows as a small shape in the middle
+  const shape = (values) => values.map((v, i) => at(i, reach(v)).join(",")).join(" ");
+  const now = shape(stats.map((s) => s.value)), was = opts.before ? shape(opts.before.map((s) => s.value)) : null;
+  const rings = [1, 0.75, 0.5, 0.25].map((v) => `<polygon class="ring${v === 1 ? " outer" : ""}" points="${shape(stats.map(() => v))}"/>`).join("");
+  const spokes = stats.map((_, i) => { const [x, y] = at(i, R); return `<line class="spoke" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}"/>`; }).join("");
+  const grow = was && was !== now && !opts.calm
+    ? `<animate attributeName="points" from="${was}" to="${now}" dur="1.1s" calcMode="spline" keyTimes="0;1" keySplines="0.2 0.7 0.2 1" fill="freeze"/>` : "";
+  const dots = grow ? "" : stats.map((s, i) => { const [x, y] = at(i, reach(s.value)); return `<circle class="dot" cx="${x}" cy="${y}" r="3.5"/>`; }).join("");
+  const labels = stats.map((s, i) => {
+    const [c, sn] = dir(i), [x, y] = at(i, R + 14);
+    const anchor = Math.abs(c) < 0.3 ? "middle" : c > 0 ? "start" : "end";
+    const y1 = sn < -0.5 ? y - 20 : sn > 0.5 ? y + 14 : y - 4;
+    const diff = opts.before ? pct(s.value) - pct(opts.before[i].value) : 0;
+    const change = diff ? `<tspan class="${diff > 0 ? "up" : "down"}"> ${diff > 0 ? "+" : "−"}${Math.abs(diff)}</tspan>` : "";
+    const box = `<rect x="${anchor === "middle" ? x - 50 : anchor === "start" ? x - 8 : x - 92}" y="${y1 - 18}" width="100" height="44" rx="8"/>`;
+    return `<g class="lab"${opts.tap ? ` data-act="theme" data-theme="${esc(s.theme)}"` : ""}>${opts.tap ? box : ""}
+      <text class="lab-name" x="${x}" y="${y1}" text-anchor="${anchor}">${esc(s.theme)}</text>
+      <text class="lab-val" x="${x}" y="${y1 + 16}" text-anchor="${anchor}">${pct(s.value)}%${change}</text></g>`;
+  }).join("");
+  return `<svg class="radar${opts.tap ? " tap" : ""}" viewBox="0 0 320 280" role="img" aria-label="${esc(stats.map((s) => `${s.theme} ${pct(s.value)}%`).join(", "))}">
+    ${rings}${spokes}${was ? `<polygon class="was" points="${was}"/>` : ""}<polygon class="now" points="${now}">${grow}</polygon>${dots}${labels}</svg>`;
+}
